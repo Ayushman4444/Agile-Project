@@ -1,0 +1,200 @@
+# app.py
+import streamlit as st
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import LabelEncoder
+import sqlite3
+import datetime
+import os
+
+# --- Configuration & Constants ---
+DATASET_PATH = 'patient_vital_signs_dataset.csv'
+DB_PATH = 'predictions.db'
+TABLE_NAME = 'vital_predictions'
+
+# --- Database Functions ---
+def init_db():
+    """Initializes the SQLite database and table if they don't exist."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    # Create table with columns for input features, predicted status, and timestamp
+    cursor.execute(f'''
+        CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            heart_rate REAL,
+            temperature REAL,
+            spo2 REAL,
+            respiratory_rate REAL,
+            bp_systolic REAL,
+            bp_diastolic REAL,
+            predicted_status TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def save_prediction(data, predicted_status):
+    """Saves the input data and prediction to the SQLite database."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(f'''
+        INSERT INTO {TABLE_NAME} (
+            heart_rate, temperature, spo2, respiratory_rate,
+            bp_systolic, bp_diastolic, predicted_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        data['heart_rate'][0], data['temperature'][0], data['spo2'][0],
+        data['respiratory_rate'][0], data['bp_systolic'][0], data['bp_diastolic'][0],
+        predicted_status
+    ))
+    conn.commit()
+    conn.close()
+
+def load_predictions():
+    """Loads all predictions from the SQLite database."""
+    if not os.path.exists(DB_PATH):
+        return pd.DataFrame(columns=[ # Return empty df if db doesn't exist yet
+            'timestamp', 'heart_rate', 'temperature', 'spo2', 'respiratory_rate',
+            'bp_systolic', 'bp_diastolic', 'predicted_status'
+        ])
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        df = pd.read_sql_query(f"SELECT * FROM {TABLE_NAME} ORDER BY timestamp DESC", conn)
+        # Format timestamp for better readability if needed
+        # df['timestamp'] = pd.to_datetime(df['timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
+        return df
+    except Exception as e:
+        st.error(f"Error loading predictions from database: {e}")
+        return pd.DataFrame() # Return empty dataframe on error
+    finally:
+        conn.close()
+
+
+# --- Machine Learning Functions ---
+@st.cache_data # Cache the data loading
+def load_data(filepath):
+    """Loads the dataset from the specified CSV file."""
+    if os.path.exists(filepath):
+        return pd.read_csv(filepath)
+    else:
+        st.error(f"Error: Dataset file not found at {filepath}")
+        return None
+
+@st.cache_resource # Cache the trained model and encoder
+def train_model(df):
+    """Trains the Random Forest model and returns the model and encoder."""
+    if df is None or df.empty:
+        return None, None
+
+    # Define features (X) and target (y)
+    features = ['heart_rate', 'temperature', 'spo2', 'respiratory_rate', 'bp_systolic', 'bp_diastolic']
+    target = 'alert_status'
+
+    X = df[features]
+    y = df[target]
+
+    # Encode the categorical target variable
+    label_encoder = LabelEncoder()
+    y_encoded = label_encoder.fit_transform(y)
+
+    # Split data (optional for this demo, but good practice)
+    # X_train, X_test, y_train, y_test = train_test_split(X, y_encoded, test_size=0.2, random_state=42, stratify=y_encoded)
+
+    # Train the Random Forest model (using all data for simplicity here)
+    model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight='balanced')
+    model.fit(X, y_encoded) # Train on the full dataset
+
+    return model, label_encoder
+
+#  Streamlit App 
+
+st.set_page_config(page_title="Intelligent Patient Vital Monitoring", layout="wide")
+
+st.title("🩺 Intelligent Patient Vital Monitoring and Alert System")
+st.markdown("Utilizing Random Forest classification to predict patient alert status based on vital signs.")
+
+#  Initialize Database 
+init_db()
+
+#  Load Data and Train Model 
+data = load_data(DATASET_PATH)
+
+if data is not None:
+    st.subheader("Raw Patient Data Overview")
+    st.dataframe(data.head())
+
+    model, label_encoder = train_model(data.copy()) # Pass a copy to avoid caching issues if data is modified
+
+    if model and label_encoder:
+        st.success("Random Forest model trained successfully.")
+
+        # --- Prediction Input Section ---
+        st.sidebar.header("Enter New Patient Vitals")
+
+        # Use columns for better layout if needed, or just stack them
+        hr = st.sidebar.number_input("Heart Rate (bpm)", min_value=30, max_value=250, value=90, step=1)
+        temp = st.sidebar.number_input("Temperature (°C)", min_value=34.0, max_value=43.0, value=37.5, step=0.1, format="%.1f")
+        sp = st.sidebar.number_input("SpO2 (%)", min_value=70, max_value=100, value=95, step=1)
+        rr = st.sidebar.number_input("Respiratory Rate (breaths/min)", min_value=5, max_value=50, value=18, step=1)
+        bps = st.sidebar.number_input("Systolic BP (mmHg)", min_value=70, max_value=250, value=120, step=1)
+        bpd = st.sidebar.number_input("Diastolic BP (mmHg)", min_value=40, max_value=150, value=80, step=1)
+
+        predict_button = st.sidebar.button("Predict Alert Status", type="primary")
+
+        if predict_button:
+            # Create input DataFrame for prediction
+            input_data = pd.DataFrame({
+                'heart_rate': [hr],
+                'temperature': [temp],
+                'spo2': [sp],
+                'respiratory_rate': [rr],
+                'bp_systolic': [bps],
+                'bp_diastolic': [bpd]
+            })
+
+            st.subheader("Prediction Result")
+            st.write("Input Vitals:")
+            st.dataframe(input_data)
+
+            # Make prediction
+            prediction_encoded = model.predict(input_data)
+            predicted_status = label_encoder.inverse_transform(prediction_encoded)[0]
+
+            # Display prediction with appropriate styling
+            if predicted_status == 'Critical':
+                st.error(f"Predicted Alert Status: *{predicted_status}*")
+            elif predicted_status == 'Warning':
+                st.warning(f"Predicted Alert Status: *{predicted_status}*")
+            else:
+                st.success(f"Predicted Alert Status: *{predicted_status}*")
+
+            # Save the prediction to the database
+            try:
+                save_prediction(input_data, predicted_status)
+                st.info(f"Prediction for entered vitals saved to database ({DB_PATH}).")
+            except Exception as e:
+                st.error(f"Failed to save prediction to database: {e}")
+
+    else:
+        st.error("Model training failed. Cannot proceed with predictions.")
+
+    # --- Display Stored Predictions ---
+    st.subheader("Prediction History (from Database)")
+    if st.button("Refresh Prediction History"):
+        st.rerun() # Rerun the script to fetch latest data
+
+    predictions_df = load_predictions()
+    if not predictions_df.empty:
+        st.dataframe(predictions_df)
+    else:
+        st.info("No predictions have been saved to the database yet.")
+
+
+else:
+    st.error(f"Could not load data from {DATASET_PATH}. Please ensure the file exists.")
+
+# --- Footer or Additional Info ---
+st.markdown("---")
+st.markdown("Developed for demonstrating ML integration with Streamlit and SQLite.")
