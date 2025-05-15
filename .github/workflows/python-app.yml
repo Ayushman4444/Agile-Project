@@ -27,9 +27,8 @@ jobs:
         python -m pip install --upgrade pip
         pip install flake8 pytest
         # Install your core dependencies
-        pip install -r requirements.txt
         # Explicit installs in case requirements.txt is missing anything
-        pip install streamlit pandas numpy scikit-learn tensorflow torch pennylane pennylane-lightning
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
     - name: Lint with flake8
       run: |
