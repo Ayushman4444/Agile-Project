@@ -1,0 +1,46 @@
+name: Vital Monitor App CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v3
+      with:
+        python-version: "3.10"
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install flake8 pytest
+        # Install your core dependencies
+        pip install -r requirements.txt
+        # Explicit installs in case requirements.txt is missing anything
+        pip install streamlit pandas numpy scikit-learn tensorflow torch pennylane pennylane-lightning
+
+    - name: Lint with flake8
+      run: |
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 . --count --exit-zero --max-complexity=12 --max-line-length=127 --statistics
+
+    - name: Run basic tests
+      run: |
+        # Run pytest only if test files exist
+        if ls tests/test_*.py 1> /dev/null 2>&1; then pytest; else echo "No tests found, skipping pytest."; fi
+
+    - name: Check Streamlit app starts (optional)
+      run: |
+        echo "streamlit run your_script.py --server.headless true"  # Replace with actual filename if needed
